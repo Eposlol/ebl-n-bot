@@ -69,7 +69,7 @@ async function askGroq({ system, user }) {
             { role: "system", content: system },
             { role: "user", content: user },
         ],
-        max_tokens: 150,
+        max_tokens: 300,
     });
 
     return new Promise((resolve, reject) => {
@@ -93,6 +93,9 @@ async function askGroq({ system, user }) {
                         if (!json.choices) {
                             reject(new Error("Groq response: " + data));
                             return;
+                        }
+                        if (json.choices[0].finish_reason === "length") {
+                            console.warn("⚠️  Groq truncated response (hit max_tokens)");
                         }
                         resolve(json.choices[0].message.content);
                     } catch (e) {

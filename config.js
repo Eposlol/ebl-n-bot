@@ -21,7 +21,15 @@ const TRIGGER_WORDS = [
   "пизда",
   "пиздатый",
   "сука",
-  "пиздун"
+  "пиздун",
+  "еврей",
+  "китай",
+  "китаец",
+  "айтишник",
+  "бот",
+  "быдло"
 ];
 
-module.exports = { TRIGGER_WORDS };
+const HISTORY_LIMIT = 10;
+
+module.exports = { TRIGGER_WORDS, HISTORY_LIMIT };

@@ -2,28 +2,62 @@ require("dotenv").config();
 const { Bot, GrammyError, HttpError } = require("grammy");
 const { hydrate } = require("@grammyjs/hydrate");
 const https = require("https");
-const { TRIGGER_WORDS } = require("./config");
+const { TRIGGER_WORDS, HISTORY_LIMIT } = require("./config");
 
 const bot = new Bot(process.env.BOT_API_KEY);
 bot.use(hydrate());
 
+// ─── Chat history ───────────────────────────────────────────────────────────
+const chatHistory = new Map();
+
+function addToHistory(chatId, from, text) {
+    if (!chatHistory.has(chatId)) chatHistory.set(chatId, []);
+    const history = chatHistory.get(chatId);
+    history.push({ from, text });
+    if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
+}
+
+function getHistoryContext(chatId) {
+    const history = chatHistory.get(chatId);
+    if (!history || history.length === 0) return "";
+    return (
+        "[Контекст последних сообщений в чате:]\n" +
+        history.map((m) => `@${m.from}: ${m.text}`).join("\n") +
+        "\n"
+    );
+}
+
 // ─── Промпты ────────────────────────────────────────────────────────────────
 const SYSTEM_BASE =
-    "Ты — дерзкий, ёбаный в рот тролл-бот в telegram-чате друзей. " +
-    "Отвечай максимально жёстко, смешно и по-русски. " +
-    "Иногда вставляй эмодзи какашки 💩. " +
-    "Ответ должен быть коротким — не больше 2-3 предложений. " +
-    "Не будь вежливым, не извиняйся.";
+    // "Ты — дерзкий, ёбаный в рот тролл-бот в telegram-чате друзей. " +
+    // "Отвечай максимально жёстко, смешно и по-русски. " +
+    // "Иногда вставляй эмодзи какашки 💩. " +
+    // "Ответ должен быть коротким — не больше 2-3 предложений. " +
+    // "Не будь вежливым, не извиняйся.";
+
+    "Ты высококультурный индивид - как Тони Старк." +
+    "Выражаешься на русском." +
+    "Можешь красиво унизить человека, так чтобы было смешно и больно, так чтобы он не понял что ты унизил его." +
+    "Можешь цитировать классиков или рассказывать популярные смешные анекдоты про евреев и айтишников." +
+    "Давать советы как должен жить человек." +
+    "Отвечай коротко не больше 2-3 предложений и смешно.";
 
 const PROMPTS = {
-    trigger: (text) => ({ system: SYSTEM_BASE, user: text }),
+    trigger: (text, context) => ({
+        system: SYSTEM_BASE,
+        user: context
+            ? context + "\n[Сообщение на которое нужно отреагировать:]\n" + text
+            : text,
+    }),
     attack: (nick) => ({
         system: SYSTEM_BASE,
         user: `Облажай и унизь человека с ником @${nick} так, чтобы было смешно и больно.`,
     }),
-    reply: (text) => ({
+    reply: (text, context) => ({
         system: SYSTEM_BASE + " Тебя провокируют — отвечай ещё злее и смешнее.",
-        user: text,
+        user: context
+            ? context + "\n[Сообщение на которое нужно отреагировать:]\n" + text
+            : text,
     }),
 };
 
@@ -50,10 +84,11 @@ async function askGroq({ system, user }) {
                 },
             },
             (res) => {
-                let data = "";
-                res.on("data", (chunk) => (data += chunk));
+                const chunks = [];
+                res.on("data", (chunk) => chunks.push(chunk));
                 res.on("end", () => {
                     try {
+                        const data = Buffer.concat(chunks).toString("utf-8");
                         const json = JSON.parse(data);
                         if (!json.choices) {
                             reject(new Error("Groq response: " + data));
@@ -85,10 +120,12 @@ function isTrigger(text, botUsername) {
 }
 
 // ─── Helper: ответить через Groq ────────────────────────────────────────────
-async function replyWithGroq(ctx, prompt) {
+async function replyWithGroq(ctx, prompt, chatId) {
     try {
         const text = await askGroq(prompt);
+        console.log(text);
         await ctx.reply(text, { reply_to_message_id: ctx.message.message_id });
+        if (chatId) addToHistory(chatId, "Ebl@n", text);
     } catch (e) {
         console.error("Groq error:", e);
         await ctx.reply("💩 кончились мозги, попробуй позже");
@@ -120,16 +157,22 @@ bot.on("message:text", async (ctx) => {
     }
 
     const botUser = await bot.api.getMe();
+    const chatId = ctx.chat.id;
+    const from = ctx.message.from?.first_name || ctx.message.from?.username || "user";
 
     // реплу на сообщение бота — отвечаем
     if (ctx.message.reply_to_message?.from?.id === botUser.id) {
-        await replyWithGroq(ctx, PROMPTS.reply(ctx.message.text));
+        addToHistory(chatId, from, ctx.message.text);
+        const context = getHistoryContext(chatId);
+        await replyWithGroq(ctx, PROMPTS.reply(ctx.message.text, context), chatId);
         return;
     }
 
     // триггерные слова или @упоминание бота
     if (!isTrigger(ctx.message.text, botUser.username)) return;
-    await replyWithGroq(ctx, PROMPTS.trigger(ctx.message.text));
+    addToHistory(chatId, from, ctx.message.text);
+    const context = getHistoryContext(chatId);
+    await replyWithGroq(ctx, PROMPTS.trigger(ctx.message.text, context), chatId);
 });
 
 // ─── Error handler ──────────────────────────────────────────────────────────
